@@ -3,127 +3,144 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#ff5a1f" />
+  <meta name="theme-color" content="#3dbdb0" />
   <title>SwiftBite – Track your order</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=3" />
+  <link rel="stylesheet" href="style.css?v=4" />
 </head>
 <body>
-  <div id="map" aria-label="Delivery map"></div>
+  <div class="app">
+    <div class="stage">
+      <header class="hero">
+        <button class="hero-btn" id="closeBtn" aria-label="New order">
+          <svg viewBox="0 0 24 24" width="26" height="26"><path d="M5 5l14 14M19 5L5 19" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+        </button>
+        <button class="hero-link" id="helpBtn">Order help</button>
+      </header>
 
-  <!-- Top bar -->
-  <header class="topbar">
-    <button class="icon-btn" id="restartBtn" title="New order" aria-label="New order">
-      <svg viewBox="0 0 24 24" width="20" height="20"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </button>
-    <div class="topbar-title">
-      <div class="brand">SwiftBite</div>
-      <div class="order-id" id="orderId">Order #—</div>
-    </div>
-    <div class="speed" role="group" aria-label="Simulation speed">
-      <button data-speed="1">1×</button>
-      <button data-speed="10">10×</button>
-      <button data-speed="30">30×</button>
-      <button data-speed="0" id="pauseBtn" aria-label="Pause">❚❚</button>
-    </div>
-  </header>
+      <div id="map" aria-label="Delivery map"></div>
 
-  <button class="fab" id="recenterBtn" title="Follow driver" aria-label="Follow driver">
-    <svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 2l7 19-7-4-7 4z" fill="currentColor"/></svg>
-  </button>
-
-  <!-- Bottom sheet -->
-  <section class="sheet" id="sheet">
-    <div class="handle" id="sheetHandle" aria-hidden="true"></div>
-
-    <div class="eta-row">
-      <div>
-        <div class="status-title" id="statusTitle">Finding your location…</div>
-        <div class="status-sub" id="statusSub">Allow location access so we can deliver to you.</div>
-      </div>
-      <div class="eta-pill" id="etaPill">
-        <div class="eta-min" id="etaMin">--</div>
-        <div class="eta-label">min</div>
+      <div class="eta-card" id="etaCard">
+        <div class="eta-top">
+          <div>
+            <div class="eta-label" id="etaLabel">Estimated arrival</div>
+            <div class="eta-time" id="etaTime">--:--</div>
+          </div>
+          <div class="eta-art" id="etaArt" aria-hidden="true"></div>
+        </div>
+        <div class="bar" id="bar">
+          <span><i></i></span><span><i></i></span><span><i></i></span><span><i></i></span><span><i></i></span>
+        </div>
+        <button class="eta-status" id="statusToggle" aria-expanded="false">
+          <span id="statusText">Finding your location…</span>
+          <svg class="chev" viewBox="0 0 24 24" width="22" height="22"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <ol class="timeline" id="timeline" hidden></ol>
       </div>
     </div>
 
-    <div class="progress" id="progress">
-      <div class="seg" data-step="0"><span></span></div>
-      <div class="seg" data-step="1"><span></span></div>
-      <div class="seg" data-step="2"><span></span></div>
-      <div class="seg" data-step="3"><span></span></div>
-    </div>
-    <div class="progress-labels">
-      <span>Confirmed</span><span>Preparing</span><span>On the way</span><span>Delivered</span>
-    </div>
-
-    <div class="nav-hint" id="navHint" hidden>
-      <span class="nav-arrow" id="navArrow">↑</span>
-      <span id="navText"></span>
-    </div>
-
-    <div class="driver card" id="driverCard" hidden>
-      <div class="avatar" id="driverAvatar">🧑</div>
-      <div class="driver-info">
-        <div class="driver-name"><span id="driverName">—</span> <span class="rating">★ <span id="driverRating">5.0</span></span></div>
-        <div class="driver-car" id="driverCar">—</div>
+    <main class="content">
+      <h2>Delivery</h2>
+      <div class="box rider" id="riderBox">
+        <div class="box-icon" id="riderIcon"></div>
+        <div class="box-main">
+          <div class="box-title" id="riderName">Finding a rider…</div>
+          <div class="box-sub" id="riderSub">We'll assign one shortly</div>
+        </div>
+        <button class="circle-btn" id="msgBtn" aria-label="Message rider" hidden>
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M4 5h16v11H8l-4 4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+        </button>
       </div>
-      <button class="round-btn" id="msgBtn" aria-label="Message driver">💬</button>
-      <button class="round-btn" id="callBtn" aria-label="Call driver">📞</button>
-    </div>
-
-    <div class="card details">
-      <div class="detail-row">
-        <div class="detail-icon" id="restIcon">🍽️</div>
-        <div>
-          <div class="detail-title" id="restName">Choosing a restaurant…</div>
-          <div class="detail-sub" id="restAddr">&nbsp;</div>
+      <div class="box">
+        <div class="box-icon">
+          <svg viewBox="0 0 24 24" width="24" height="24"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/></svg>
+        </div>
+        <div class="box-main">
+          <div class="box-title" id="homeAddr">Locating…</div>
+          <div class="box-sub">Delivery address</div>
         </div>
       </div>
-      <div class="detail-row">
-        <div class="detail-icon">🏠</div>
+
+      <h2>Your order</h2>
+      <div class="box column">
+        <div class="rest-row">
+          <div class="box-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24"><path d="M5 3v8a2 2 0 0 0 2 2v8M9 3v8a2 2 0 0 1-2 2M7 3v6M17 21V3c-2 0-4 3-4 7 0 2 1 3 4 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="box-main">
+            <div class="box-title" id="restName">Choosing a restaurant…</div>
+            <div class="box-sub" id="restAddr">&nbsp;</div>
+          </div>
+        </div>
+        <div class="items" id="items"></div>
+      </div>
+      <p class="credits">Simulation for fun — no real food will arrive. Map © OpenStreetMap contributors, OpenFreeMap.</p>
+    </main>
+  </div>
+
+  <!-- Order help sheet -->
+  <div class="overlay" id="helpSheet" hidden>
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <h3>Order help</h3>
+      <div class="sheet-row">
         <div>
-          <div class="detail-title">Delivering to</div>
-          <div class="detail-sub" id="homeAddr">Locating…</div>
+          <div class="box-title">Simulation speed</div>
+          <div class="box-sub">1× is real time</div>
+        </div>
+        <div class="seg" role="group" aria-label="Simulation speed">
+          <button data-speed="1">1×</button>
+          <button data-speed="5">5×</button>
+          <button data-speed="20">20×</button>
+          <button data-speed="0" id="pauseBtn">Pause</button>
         </div>
       </div>
-      <div class="items" id="items"></div>
-    </div>
-  </section>
-
-  <!-- Location fallback modal -->
-  <div class="modal" id="locModal" hidden>
-    <div class="modal-card">
-      <h2>Where should we deliver?</h2>
-      <p>We couldn't get your location automatically. Enter an address instead.</p>
-      <form id="addrForm">
-        <input id="addrInput" type="text" placeholder="e.g. 1600 Pennsylvania Ave, Washington DC" autocomplete="street-address" required />
-        <button type="submit" class="primary">Deliver here</button>
-      </form>
-      <div class="modal-error" id="addrError"></div>
-      <button class="link-btn" id="retryGeo">Try my location again</button>
-      <button class="link-btn" id="demoLoc">Use a demo location</button>
+      <button class="sheet-btn" id="helpMsg">Message rider</button>
+      <button class="sheet-btn" id="helpCall">Call rider</button>
+      <button class="sheet-btn danger" id="helpNew">Cancel and start a new order</button>
+      <button class="sheet-btn plain" id="helpClose">Close</button>
     </div>
   </div>
 
-  <!-- Delivered modal -->
-  <div class="modal" id="doneModal" hidden>
-    <div class="modal-card center">
-      <div class="big-emoji">🎉</div>
-      <h2>Your order has arrived!</h2>
-      <p id="doneText">Enjoy your meal.</p>
+  <!-- Location fallback -->
+  <div class="overlay center" id="locModal" hidden>
+    <div class="dialog">
+      <h3>Where should we deliver?</h3>
+      <p>We couldn't get your location automatically. Enter an address instead.</p>
+      <form id="addrForm">
+        <input id="addrInput" type="text" placeholder="Street, city" autocomplete="street-address" required />
+        <button type="submit" class="primary">Deliver here</button>
+      </form>
+      <div class="error" id="addrError"></div>
+      <button class="text-btn" id="retryGeo">Try my location again</button>
+      <button class="text-btn" id="demoLoc">Use a demo location</button>
+    </div>
+  </div>
+
+  <!-- Delivered -->
+  <div class="overlay center" id="doneModal" hidden>
+    <div class="dialog centered">
+      <div class="done-icon">
+        <svg viewBox="0 0 24 24" width="40" height="40"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <h3>Enjoy your meal!</h3>
+      <p id="doneText">Your order has been delivered.</p>
       <div class="stars" id="stars">
         <button data-v="1">★</button><button data-v="2">★</button><button data-v="3">★</button><button data-v="4">★</button><button data-v="5">★</button>
       </div>
       <button class="primary" id="againBtn">Order again from somewhere new</button>
+      <button class="text-btn" id="doneClose">Close</button>
     </div>
   </div>
 
   <div class="toast" id="toast"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="app.js?v=3"></script>
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.3/leaflet-maplibre-gl.js"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>
