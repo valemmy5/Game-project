@@ -1,5 +1,5 @@
 /* SwiftBite – simulated food delivery tracker
- * Uses: Leaflet (map), CARTO tiles, Overpass API (real nearby restaurants),
+ * Uses: Leaflet (map), OpenStreetMap tiles, Overpass API (real nearby restaurants),
  * OSRM (real road routing), Nominatim (address lookup).
  * Every network dependency has an offline fallback so the simulation always runs.
  */
@@ -10,11 +10,14 @@
   const CFG = {
     restaurantRadius: 3500,   // metres to search for restaurants around you
     minRestaurantDist: 600,   // don't pick one right next door
-    driverStartDist: [900, 2200],
-    confirmSec: 30,
-    prepSec: [240, 480],
-    pickupWaitSec: 75,
-    doorSec: 45,
+    // Timings are in real seconds at 1× speed; a typical order takes ~20–25 minutes.
+    driverStartDist: [1500, 3000], // driver is this far from the restaurant when assigned
+    confirmSec: [60, 120],         // restaurant accepts the order
+    driverAcceptSec: 45,           // after confirmation, a driver accepts
+    prepSec: [540, 840],           // cooking time (9–14 min)
+    pickupWaitSec: [60, 150],      // handing over the bag
+    doorSec: 60,                   // parking + walking to your door
+    detourChance: 0.65,            // chance the driver takes a different way when OSRM has no alternative
     trafficFactor: [1.1, 1.35],
     demoLocation: { lat: 40.7411, lng: -73.9897, label: 'Flatiron, New York, NY' },
     netTimeoutMs: 12000,
@@ -154,7 +157,7 @@
   let home = null;            // { lat, lng, label }
   let order = null;           // current order (see newOrder)
   let layers = [];
-  let speed = Number(storage.get('swiftbite-speed') || 10);
+  let speed = Number(storage.get('swiftbite-speed-v2') || 1);
   let paused = false;
   let follow = true;
   let lastFrame = 0;
@@ -322,32 +325,61 @@
     return ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'][Math.round(deg / 45) % 8];
   }
 
-  /** Returns { coords: [[lat,lng]], times: cumulative seconds, total, dist, steps: [{t, text, arrow}] } */
+  async function osrmRoutes(points, alternatives) {
+    const pts = points.map((p) => `${p[1].toFixed(6)},${p[0].toFixed(6)}`).join(';');
+    const alt = alternatives ? '&alternatives=3' : '';
+    const j = await fetchJSON(`${OSRM}${pts}?overview=full&geometries=geojson&steps=true&annotations=duration${alt}`);
+    if (j.code !== 'Ok' || !j.routes || !j.routes.length) throw new Error(j.code);
+    return j.routes;
+  }
+
+  /** Convert an OSRM route into { coords: [[lat,lng]], times: cumulative seconds, total, dist, steps } */
+  function buildRoute(r, traffic) {
+    const coords = r.geometry.coordinates.map(([x, y]) => [y, x]);
+    const durs = r.legs.flatMap((l) => (l.annotation && l.annotation.duration) || []);
+    const times = [0];
+    if (durs.length === coords.length - 1) {
+      for (let i = 1; i < coords.length; i++) times.push(times[i - 1] + Math.max(durs[i - 1], 0.05) * traffic);
+    } else {
+      // Fallback: spread the route's total duration by distance.
+      const seg = [];
+      let tot = 0;
+      for (let i = 1; i < coords.length; i++) { const d = haversine(coords[i - 1], coords[i]); seg.push(d); tot += d; }
+      for (let i = 1; i < coords.length; i++) times.push(times[i - 1] + (seg[i - 1] / Math.max(tot, 1)) * r.duration * traffic);
+    }
+    const total = times[times.length - 1];
+    let acc = 0;
+    const steps = [];
+    r.legs.forEach((leg, li) => {
+      leg.steps.forEach((st) => {
+        const type = st.maneuver && st.maneuver.type;
+        const hide = (type === 'arrive' && li < r.legs.length - 1) || (type === 'depart' && li > 0);
+        if (!hide) steps.push({ t: acc, text: maneuverText(st), arrow: maneuverArrow(st) });
+        acc += st.duration;
+      });
+    });
+    const scale = total / Math.max(acc, 1);
+    steps.forEach((st) => { st.t *= scale; });
+    return { coords, times, total, dist: r.distance, steps, real: true };
+  }
+
+  /** Real road route; varies between orders (OSRM alternatives or a random detour via point). */
   async function getRoute(from, to) {
     const traffic = rand(...CFG.trafficFactor);
     try {
-      const url = `${OSRM}${from[1]},${from[0]};${to[1]},${to[0]}?overview=full&geometries=geojson&steps=true&annotations=duration,distance`;
-      const j = await fetchJSON(url);
-      if (j.code !== 'Ok' || !j.routes.length) throw new Error(j.code);
-      const r = j.routes[0];
-      const leg = r.legs[0];
-      const coords = r.geometry.coordinates.map(([x, y]) => [y, x]);
-      const durs = leg.annotation && leg.annotation.duration;
-      const times = [0];
-      for (let i = 1; i < coords.length; i++) {
-        const d = durs && durs[i - 1] != null ? durs[i - 1] : haversine(coords[i - 1], coords[i]) / 8;
-        times.push(times[i - 1] + Math.max(d, 0.05) * traffic);
+      const routes = await osrmRoutes([from, to], true);
+      let chosen = pick(routes);
+      if (routes.length === 1 && Math.random() < CFG.detourChance) {
+        try {
+          const direct = haversine(from, to);
+          const mid = [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2];
+          const side = Math.random() < 0.5 ? 90 : -90;
+          const via = offsetPoint(mid, Math.min(700, Math.max(150, direct * rand(0.15, 0.3))), bearing(from, to) + side);
+          const [v] = await osrmRoutes([from, via, to], false);
+          if (v.duration < routes[0].duration * 1.4) chosen = v;
+        } catch { /* keep the direct route */ }
       }
-      let acc = 0;
-      const steps = leg.steps.map((s) => {
-        const step = { t: acc * traffic, text: maneuverText(s), arrow: maneuverArrow(s) };
-        acc += s.duration;
-        return step;
-      });
-      // Rescale step times to match annotation total exactly.
-      const scale = times[times.length - 1] / Math.max(acc * traffic, 1);
-      steps.forEach((s) => { s.t *= scale; });
-      return { coords, times, total: times[times.length - 1], dist: r.distance, steps, real: true };
+      return buildRoute(chosen, traffic);
     } catch (e) {
       console.warn('OSRM failed, using a straight-line route', e);
       return straightRoute(from, to, traffic);
@@ -425,10 +457,16 @@
     document.querySelectorAll('#stars button').forEach((b) => b.classList.remove('on'));
   }
 
+  const SAVE_DATA = 'swiftbite-order-data-v2';
+  const SAVE_STATE = 'swiftbite-order-state-v2';
+  let orderToken = 0;
+
   async function newOrder() {
     if (!home) return;
+    const token = ++orderToken;
     cancelAnimationFrame(rafId);
     order = null;
+    clearSaved();
     clearLayers();
     resetUI();
     const orderNo = Math.floor(100000 + Math.random() * 899999);
@@ -439,57 +477,102 @@
     setStatus('Placing your order…', 'Finding a restaurant near you');
 
     const rest = await findRestaurant(homePt);
+    if (token !== orderToken) return;
     const menu = menuFor(rest.cuisine, rest.name, rest.amenity);
-    $('restName').textContent = rest.name;
-    $('restIcon').textContent = menu.emoji;
-    const cuisineLabel = rest.cuisine ? rest.cuisine.split(';')[0].replace(/_/g, ' ') : '';
-    $('restAddr').textContent = [rest.addr, cuisineLabel, `${fmtDist(rest.dist)} away`].filter(Boolean).join(' · ');
-    addLayer(L.marker(rest.pos, { icon: pinIcon(menu.emoji), zIndexOffset: 400 })
-      .bindTooltip(rest.name, { direction: 'top', offset: [0, -50] }));
-
-    renderItems(menu);
     setStatus('Placing your order…', `Sending your order to ${rest.name}`);
 
     // Driver starts somewhere near the restaurant and drives there first.
     const driverStart = offsetPoint(rest.pos, rand(...CFG.driverStartDist), rand(0, 360));
     const [toRest, toHome] = await Promise.all([getRoute(driverStart, rest.pos), getRoute(rest.pos, homePt)]);
+    if (token !== orderToken) return;
 
     const [driverName, avatar] = pick(DRIVERS);
-    const driver = {
-      name: driverName, avatar,
-      car: `${pick(VEHICLES)} · ${plate()}`,
-      rating: rand(4.82, 5).toFixed(2),
-    };
+    const driver = { name: driverName, avatar, car: `${pick(VEHICLES)} · ${plate()}`, rating: rand(4.82, 5).toFixed(2) };
 
-    // ---- timeline (simulated seconds)
+    // ---- timeline (simulated seconds since the order was placed)
     const T = {};
-    T.confirmed = CFG.confirmSec;
+    T.confirmed = rand(...CFG.confirmSec);
+    T.driverAccepted = T.confirmed + CFG.driverAcceptSec;
     T.prepDone = T.confirmed + rand(...CFG.prepSec);
-    T.driverAtRest = T.confirmed + 20 + toRest.total;           // driver accepted 20s after confirm
-    T.pickedUp = Math.max(T.prepDone, T.driverAtRest) + CFG.pickupWaitSec;
+    T.driverAtRest = T.driverAccepted + toRest.total;
+    T.pickedUp = Math.max(T.prepDone, T.driverAtRest) + rand(...CFG.pickupWaitSec);
     T.atDoor = T.pickedUp + toHome.total;
     T.delivered = T.atDoor + CFG.doorSec;
 
-    // ---- map layers
+    const data = {
+      no: orderNo, placedAt: Date.now(), home, rest, menuEmoji: menu.emoji,
+      itemsHtml: itemsHtml(menu), driver, driverStart, toRest, toHome, T,
+    };
+    storage.set(SAVE_DATA, JSON.stringify(data));
+    startOrder(data, 0, {});
+    if (!toHome.real) toast('Routing service unavailable – using approximate route');
+  }
+
+  /** Draw an order on the map and start (or resume) the simulation. */
+  function startOrder(data, sim, flags) {
+    cancelAnimationFrame(rafId);
+    clearLayers();
+    resetUI();
+    const { rest, T, toRest, toHome, driverStart } = data;
+    const homePt = [data.home.lat, data.home.lng];
+    $('orderId').textContent = `Order #${data.no}`;
+    addLayer(L.marker(homePt, { icon: pinIcon('🏠', 'home'), zIndexOffset: 500 }));
+
+    $('restName').textContent = rest.name;
+    $('restIcon').textContent = data.menuEmoji;
+    const cuisineLabel = rest.cuisine ? rest.cuisine.split(';')[0].replace(/_/g, ' ') : '';
+    $('restAddr').textContent = [rest.addr, cuisineLabel, `${fmtDist(rest.dist)} away`].filter(Boolean).join(' · ');
+    addLayer(L.marker(rest.pos, { icon: pinIcon(data.menuEmoji), zIndexOffset: 400 })
+      .bindTooltip(rest.name, { direction: 'top', offset: [0, -50] }));
+    $('items').innerHTML = data.itemsHtml;
+
     const restLine = addLayer(L.polyline(toRest.coords, { color: '#9aa1ad', weight: 4, opacity: 0.8, dashArray: '2 8', lineCap: 'round' }));
     const homeLineBg = addLayer(L.polyline(toHome.coords, { color: '#ffffff', weight: 9, opacity: 0.9, lineCap: 'round' }));
     const homeLine = addLayer(L.polyline(toHome.coords, { color: '#ff5a1f', weight: 5, opacity: 0.95, lineCap: 'round' }));
     const driverMarker = L.marker(driverStart, { icon: driverIcon, zIndexOffset: 1000 });
 
     order = {
-      no: orderNo, rest, menu, driver, toRest, toHome, T, sim: 0,
-      startedAt: Date.now(), placedClock: new Date(),
+      data, no: data.no, rest, driver: data.driver, toRest, toHome, T, sim,
+      placedClock: new Date(data.placedAt),
       driverMarker, restLine, homeLine, homeLineBg, driverShown: false,
-      flags: {}, lastLineUpdate: 0, lastPan: 0, phase: null,
+      flags, lastLineUpdate: 0, lastPan: 0, lastSave: 0,
     };
 
     map.fitBounds(L.latLngBounds([homePt, rest.pos, driverStart]), { ...mapPadding(), maxZoom: 16 });
     follow = false;
     $('recenterBtn').classList.add('off');
-
-    if (!toHome.real) toast('Routing service unavailable – using approximate route');
     lastFrame = performance.now();
     rafId = requestAnimationFrame(tick);
+  }
+
+  function saveState() {
+    if (!order || order.flags.delivered) return;
+    storage.set(SAVE_STATE, JSON.stringify({ sim: order.sim, flags: order.flags, paused, savedAt: Date.now() }));
+  }
+  function clearSaved() {
+    try { localStorage.removeItem(SAVE_DATA); localStorage.removeItem(SAVE_STATE); } catch { /* ignore */ }
+  }
+
+  /** If an order was in progress when the page was closed/reloaded, pick it back up. */
+  function tryResume() {
+    let data, st;
+    try {
+      data = JSON.parse(storage.get(SAVE_DATA) || 'null');
+      st = JSON.parse(storage.get(SAVE_STATE) || 'null') || { sim: 0, flags: {}, paused: false, savedAt: data && data.placedAt };
+    } catch { return false; }
+    if (!data || !data.T || !data.home) return false;
+    if (Date.now() - data.placedAt > 3 * 3600 * 1000) { clearSaved(); return false; }
+    paused = !!st.paused;
+    renderSpeedButtons();
+    const away = paused ? 0 : (Date.now() - st.savedAt) / 1000 * speed;
+    const flags = { ...st.flags };
+    delete flags.pickedUp; delete flags.door; // re-run these so the map state is rebuilt
+    home = data.home;
+    $('homeAddr').textContent = home.label || `${home.lat.toFixed(5)}, ${home.lng.toFixed(5)}`;
+    if (!home.label) reverseGeocode(home.lat, home.lng).then((l) => { if (l) { home.label = l; $('homeAddr').textContent = l; } });
+    startOrder(data, st.sim + away, flags);
+    toast('Resuming your order…');
+    return true;
   }
 
   function plate() {
@@ -497,7 +580,7 @@
     return `${Math.floor(rand(1, 9))}${pick(L3)}${pick(L3)}${pick(L3)}${Math.floor(rand(100, 999))}`;
   }
 
-  function renderItems(menu) {
+  function itemsHtml(menu) {
     const n = Math.floor(rand(2, 4.99));
     const chosen = [...menu.items].sort(() => Math.random() - 0.5).slice(0, n);
     let total = 0;
@@ -509,7 +592,7 @@
     total += 2.99; // delivery fee
     rows.push('<div class="item"><span>Delivery fee</span><span>$2.99</span></div>');
     rows.push(`<div class="item total"><span>Total</span><span>$${total.toFixed(2)}</span></div>`);
-    $('items').innerHTML = rows.join('');
+    return rows.join('');
   }
 
   function setProgress(stepIdx, frac) {
@@ -551,9 +634,11 @@
   function tick(now) {
     const o = order;
     if (!o) return;
-    const dt = Math.min((now - lastFrame) / 1000, 120);
+    // No cap: if the phone was locked / tab hidden, the driver keeps going like a real delivery.
+    const dt = Math.max(0, (now - lastFrame) / 1000);
     lastFrame = now;
     if (!paused) o.sim += dt * speed;
+    if (now - o.lastSave > 3000) { o.lastSave = now; saveState(); }
     const t = o.sim;
     const T = o.T;
 
@@ -564,7 +649,7 @@
     const etaWindow = `${fmtClock(new Date(etaClock - 4 * 60000))} – ${fmtClock(new Date(etaClock.getTime() + 4 * 60000))}`;
 
     // Driver: heading to restaurant
-    const driverAccepted = T.confirmed + 20;
+    const driverAccepted = T.driverAccepted;
     if (t >= driverAccepted && t < T.pickedUp) {
       const p = positionAt(o.toRest, t - driverAccepted);
       showDriver(p.pos, p.heading);
@@ -578,13 +663,18 @@
       const frac = (t - T.confirmed) / (T.pickedUp - T.confirmed);
       setProgress(1, frac);
       once('prep', () => toast(`👨‍🍳 ${o.rest.name} started preparing your food`));
+      const prepFrac = (t - T.confirmed) / (T.prepDone - T.confirmed);
+      if (prepFrac > 0.4 && prepFrac < 1) once('cooking', () => toast('🔥 Your food is cooking'));
+      if (prepFrac > 0.85 && prepFrac < 1) once('packing', () => toast('📦 The restaurant is packing your order'));
       if (t >= T.driverAtRest) {
         setStatus('Driver is at the restaurant', t < T.prepDone ? 'Food is almost ready…' : 'Picking up your order now');
         once('atRest', () => toast(`${o.driver.name} has arrived at ${o.rest.name}`));
       } else if (t >= T.prepDone) {
         setStatus('Your food is ready', `Waiting for ${o.driver.name} to pick it up · Arriving ${etaWindow}`);
+      } else if (t >= driverAccepted) {
+        setStatus('Preparing your order', `${o.driver.name} is heading to the restaurant · Arriving ${etaWindow}`);
       } else {
-        setStatus('Preparing your order', `Estimated arrival ${etaWindow}`);
+        setStatus('Preparing your order', `Finding a driver · Arriving ${etaWindow}`);
       }
       $('navHint').hidden = true;
     } else if (t < T.atDoor) {
@@ -595,9 +685,9 @@
         follow = true;
         $('recenterBtn').classList.remove('off');
         map.setView(visibleCenter(o.toHome.coords[0], 16), 16, { animate: true });
-        $('navHint').hidden = false;
         setSheetHeightVar();
       });
+      $('navHint').hidden = false;
       const dtHome = t - T.pickedUp;
       const p = positionAt(o.toHome, dtHome);
       showDriver(p.pos, p.heading);
@@ -645,6 +735,7 @@
         const mins = Math.round(T.delivered / 60);
         $('doneText').textContent = `${o.driver.name} delivered your order from ${o.rest.name} in ${mins} minutes. How was your delivery?`;
         $('doneModal').hidden = false;
+        clearSaved();
       });
       return; // stop the loop
     }
@@ -664,11 +755,14 @@
         paused = !paused;
       } else {
         speed = v; paused = false;
-        storage.set('swiftbite-speed', String(v));
+        storage.set('swiftbite-speed-v2', String(v));
       }
       renderSpeedButtons();
+      saveState();
     });
   });
+  document.addEventListener('visibilitychange', saveState);
+  window.addEventListener('pagehide', saveState);
 
   $('recenterBtn').addEventListener('click', () => {
     follow = true;
@@ -681,7 +775,11 @@
   });
   map.on('dragstart', () => { follow = false; $('recenterBtn').classList.add('off'); });
 
-  $('restartBtn').addEventListener('click', () => { if (home) newOrder(); });
+  $('restartBtn').addEventListener('click', () => {
+    if (!home) return;
+    if (order && !order.flags.delivered && !confirm('Cancel this order and start a new one?')) return;
+    newOrder();
+  });
   $('againBtn').addEventListener('click', () => newOrder());
 
   $('sheetHandle').addEventListener('click', () => {
@@ -721,5 +819,5 @@
   // ---------------------------------------------------------------- boot
   renderSpeedButtons();
   setSheetHeightVar();
-  locate();
+  if (!tryResume()) locate();
 })();

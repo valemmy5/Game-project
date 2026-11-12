@@ -9,7 +9,7 @@ A web app that looks like a food delivery app's live tracking screen. A virtual 
 - **Drives real roads.** OSRM gives the road route and per-segment travel times, so the driver slows down where the roads are slower. Turn-by-turn hints update as the driver goes.
 - **Follows a delivery timeline:** order confirmed → driver assigned and heading to the restaurant → food being prepared → pickup → on the way → at your door → delivered.
 - **Has a delivery-app UI:** ETA countdown and arrival window, progress bar, driver card (name, rating, car, plate), a generated order with prices, toast notifications, a fake message/call button and a rating screen.
-- **Speed controls:** 1× (real time), 10× or 30×, plus pause. The map follows the driver; drag the map to stop following, and tap the arrow button to follow again.
+- **Real-time by default:** an order takes about 20–25 minutes, including 9–14 minutes of cooking. Speed it up with 10× or 30×, or pause. If you reload or close the page, the order picks up where it should be. The map follows the driver; drag the map to stop following, and tap the arrow button to follow again.
 - **Works without the network services.** If a service can't be reached, it makes up a restaurant and uses an approximate route, so the simulation still runs.
 
 ## Running it
