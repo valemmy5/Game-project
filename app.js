@@ -21,7 +21,12 @@
   };
 
   const OSRM = 'https://router.project-osrm.org/route/v1/driving/';
-  const OVERPASS = 'https://overpass-api.de/api/interpreter';
+  // Public Overpass servers are sometimes slow; we query several and take the first answer.
+  const OVERPASS = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://overpass.private.coffee/api/interpreter',
+  ];
   const NOMINATIM = 'https://nominatim.openstreetmap.org/';
 
   // ---------------------------------------------------------------- helpers
@@ -129,9 +134,10 @@
 
   // ---------------------------------------------------------------- map
   const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([39.5, -98.35], 4);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    maxZoom: 20, subdomains: 'abcd',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+  // Standard OpenStreetMap tiles: free, no API key needed.
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   }).addTo(map);
 
   const pinIcon = (emoji, cls = '') => L.divIcon({
@@ -258,11 +264,12 @@
       way["amenity"~"^(restaurant|fast_food)$"]["name"](around:${CFG.restaurantRadius},${lat},${lng});
     );out center 120;`;
     try {
-      const j = await fetchJSON(OVERPASS, {
+      const body = 'data=' + encodeURIComponent(q);
+      const j = await Promise.any(OVERPASS.map((url) => fetchJSON(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'data=' + encodeURIComponent(q),
-      });
+        body,
+      }).then((r) => { if (!r.elements) throw new Error('bad response'); return r; })));
       const places = (j.elements || [])
         .map((el) => {
           const p = el.type === 'node' ? [el.lat, el.lon] : el.center && [el.center.lat, el.center.lon];

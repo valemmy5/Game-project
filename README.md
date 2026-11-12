@@ -35,4 +35,4 @@ Tweak timings (prep time, search radius, and so on) in the `CFG` object at the t
 
 ## Credits
 
-Map data © OpenStreetMap contributors · Tiles © CARTO · Routing by OSRM · Geocoding by Nominatim · Map library: Leaflet.
+Map data & tiles © OpenStreetMap contributors · Routing by OSRM · Geocoding by Nominatim · Map library: Leaflet.
